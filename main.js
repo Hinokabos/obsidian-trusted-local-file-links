@@ -1,14 +1,23 @@
 const { Plugin, PluginSettingTab, Setting, Notice, normalizePath } = require("obsidian");
 const { spawn } = require("node:child_process");
+const { shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 
 const defaults = {
+    trustedFolder: "",
+    extensions: "pdf, png, jpg, jpeg, webp, wav, mp3, mp4, mov, psd",
     canvas: "",
     mediaFolder: "",
     vlcPath: "C:/Program Files/VideoLAN/VLC/vlc.exe",
 };
+
+const supportedExtensions = new Set([
+    "pdf", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "psd",
+    "wav", "mp3", "flac", "ogg", "m4a", "aac", "mp4", "mov", "mkv", "webm",
+    "txt", "md",
+]);
 
 class PlaybackSettings extends PluginSettingTab {
     constructor(plugin) {
@@ -19,11 +28,14 @@ class PlaybackSettings extends PluginSettingTab {
     display() {
         this.containerEl.empty();
         const fields = [
+            ["trustedFolder", "Trusted folder", "Absolute path to a local folder whose files you trust. Leave blank to disable direct opening."],
+            ["extensions", "File extensions", "Comma-separated extensions. Supported: " + [...supportedExtensions].join(", ") + "."],
             ["canvas", "Canvas path", "Path relative to the vault, e.g. Boards/Editing.canvas."],
             ["mediaFolder", "Video folder", "Absolute path to the folder containing your MP4 files."],
             ["vlcPath", "VLC executable", "Absolute path to vlc.exe."],
         ];
         for (const [key, name, description] of fields) {
+            if (key === "canvas") new Setting(this.containerEl).setName("Optional VLC timestamp playback").setHeading();
             new Setting(this.containerEl).setName(name).setDesc(description).addText(input =>
                 input.setValue(this.plugin.settings[key]).onChange(async value => {
                     value = value.trim();
@@ -48,6 +60,30 @@ function inside(dir, file) {
         !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
 }
 
+function isLocalPath(file) {
+    return /^[a-z]:[\\/]/i.test(file) && !file.slice(2).includes(":");
+}
+
+function extensionOf(file) {
+    return path.extname(file).slice(1).toLowerCase();
+}
+
+function trustedFile(file, folder, extensions) {
+    if (!isLocalPath(file) || !isLocalPath(folder) || !inside(folder, file)) return;
+    const allowed = new Set(extensions.toLowerCase().split(/[\s,.]+/));
+    const extension = extensionOf(file);
+    if (!supportedExtensions.has(extension) || !allowed.has(extension)) return;
+    const root = fs.realpathSync(folder);
+    const resolved = fs.realpathSync(file);
+    if (isLocalPath(root) && isLocalPath(resolved) && inside(root, resolved) &&
+        extensionOf(resolved) === extension && fs.statSync(resolved).isFile()) return resolved;
+}
+
+function handleClick(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+}
+
 function readCue(playlist, Parser, footage) {
     const xml = new Parser().parseFromString(fs.readFileSync(playlist, "utf8"), "application/xml");
     const tracks = xml.getElementsByTagNameNS("http://xspf.org/ns/0/", "track");
@@ -70,23 +106,57 @@ module.exports = class ProductionVlcPlayback extends Plugin {
         this.settings = { ...defaults, ...await this.loadData() };
         if (process.platform !== "win32") return;
         this.addSettingTab(new PlaybackSettings(this));
-        this.registerDomEvent(document, "click", event => this.playFromCanvas(event), { capture: true });
+        this.registerDomEvent(document, "click", event => this.openLink(event), { capture: true });
     }
 
-    playFromCanvas(event) {
-        const { canvas, mediaFolder, vlcPath } = this.settings;
+    async openLink(event) {
         if (event.button !== 0 || event.defaultPrevented || !event.isTrusted ||
-            !canvas || !path.isAbsolute(mediaFolder) || !path.isAbsolute(vlcPath) ||
-            this.app.workspace.getActiveFile()?.path !== canvas) return;
+            event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
 
         const link = event.target?.closest?.("a[href]");
         const view = this.app.workspace.getMostRecentLeaf()?.view;
-        if (!link?.closest(".canvas-node-content") || !view?.containerEl.contains(link)) return;
-        const href = link.getAttribute("href");
-        if (!/^file:\/\/\/.*\.xspf$/i.test(href) || !/VLC/i.test(link.textContent)) return;
+        if (!link || !view?.containerEl.contains(link)) return;
+        const inCanvas = view.getViewType() === "canvas" && link.closest(".canvas-node-content");
+        const inNote = view.getViewType() === "markdown" && link.closest(".markdown-preview-view");
+        if (!inCanvas && !inNote) return;
 
+        const href = link.getAttribute("href");
+        if (!/^file:\/\/\//i.test(href)) return;
+        let candidate;
         try {
-            const candidate = pathFromFileUrl(href);
+            candidate = pathFromFileUrl(href);
+        } catch {
+            return;
+        }
+
+        if (inCanvas && /\.xspf$/i.test(candidate) && /VLC/i.test(link.textContent)) {
+            this.playFromCanvas(event, candidate);
+            return;
+        }
+
+        let file;
+        try {
+            file = trustedFile(candidate, this.settings.trustedFolder, this.settings.extensions);
+        } catch {
+            // Let Obsidian handle missing or inaccessible paths as it normally would.
+            return;
+        }
+        if (!file) return;
+
+        handleClick(event);
+        try {
+            const error = await shell.openPath(file);
+            if (error) new Notice("Could not open the file. " + error);
+        } catch (error) {
+            new Notice("Could not open the file. " + error.message);
+        }
+    }
+
+    playFromCanvas(event, candidate) {
+        const { canvas, mediaFolder, vlcPath } = this.settings;
+        if (!canvas || !path.isAbsolute(mediaFolder) || !path.isAbsolute(vlcPath) ||
+            this.app.workspace.getActiveFile()?.path !== canvas) return;
+        try {
             const vaultPlaylists = path.join(this.app.vault.adapter.getBasePath(), "vlc");
             if (!inside(vaultPlaylists, candidate)) return;
             const dir = fs.realpathSync(vaultPlaylists);
@@ -94,15 +164,13 @@ module.exports = class ProductionVlcPlayback extends Plugin {
             if (!inside(dir, playlist) || !/\.xspf$/i.test(playlist) ||
                 !fs.statSync(playlist).isFile()) return;
             const [video, second] = readCue(playlist, link.ownerDocument.defaultView.DOMParser, mediaFolder);
-            event.preventDefault();
-            event.stopImmediatePropagation();
+            handleClick(event);
             const player = spawn(vlcPath, ["--no-qt-start-minimized", "--start-time=" + second, "--", video],
                 { detached: true, stdio: "ignore" });
             player.on("error", error => new Notice("Could not start VLC. " + error.message));
             player.unref();
         } catch (error) {
-            event.preventDefault();
-            event.stopImmediatePropagation();
+            handleClick(event);
             new Notice("Could not play the VLC link. " + error.message);
         }
     }

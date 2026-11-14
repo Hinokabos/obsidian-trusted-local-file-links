@@ -1,9 +1,9 @@
 {
   "id": "vlc-timestamp-links",
-  "name": "VLC Timestamp Links",
-  "version": "1.0.0",
+  "name": "Trusted Local File Links",
+  "version": "1.1.0",
   "minAppVersion": "1.8.0",
-  "description": "Play local MP4 files from timestamped XSPF links in Obsidian Canvas on Windows.",
+  "description": "Open trusted local file links from Obsidian in their default Windows apps without the external-file prompt.",
   "author": "Hinokabos",
   "isDesktopOnly": true
 }
