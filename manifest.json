@@ -1,0 +1,9 @@
+{
+  "id": "vlc-timestamp-links",
+  "name": "VLC Timestamp Links",
+  "version": "1.0.0",
+  "minAppVersion": "1.8.0",
+  "description": "Play local MP4 files from timestamped XSPF links in Obsidian Canvas on Windows.",
+  "author": "Hinokabos",
+  "isDesktopOnly": true
+}
