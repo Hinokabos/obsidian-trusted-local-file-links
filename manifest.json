@@ -1,7 +1,7 @@
 {
-  "id": "vlc-timestamp-links",
+  "id": "trusted-local-file-links",
   "name": "Trusted Local File Links",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minAppVersion": "1.8.0",
   "description": "Open trusted local file links from Obsidian in their default Windows apps without the external-file prompt.",
   "author": "Hinokabos",
