@@ -19,7 +19,7 @@ const supportedExtensions = new Set([
     "txt", "md",
 ]);
 
-class PlaybackSettings extends PluginSettingTab {
+class LocalFileLinkSettings extends PluginSettingTab {
     constructor(plugin) {
         super(plugin.app, plugin);
         this.plugin = plugin;
@@ -49,7 +49,7 @@ class PlaybackSettings extends PluginSettingTab {
 function pathFromFileUrl(value) {
     const url = new URL(value);
     if (url.protocol !== "file:" || url.host || url.search || url.hash) {
-        throw new Error("ローカルファイルのURLを確認できません。");
+        throw new Error("Use an absolute local file URL.");
     }
     return fileURLToPath(url);
 }
@@ -101,11 +101,11 @@ function readCue(playlist, Parser, footage) {
     return [video, starts[0][1]];
 }
 
-module.exports = class ProductionVlcPlayback extends Plugin {
+module.exports = class TrustedLocalFileLinks extends Plugin {
     async onload() {
         this.settings = { ...defaults, ...await this.loadData() };
         if (process.platform !== "win32") return;
-        this.addSettingTab(new PlaybackSettings(this));
+        this.addSettingTab(new LocalFileLinkSettings(this));
         this.registerDomEvent(document, "click", event => this.openLink(event), { capture: true });
     }
 
@@ -130,7 +130,7 @@ module.exports = class ProductionVlcPlayback extends Plugin {
         }
 
         if (inCanvas && /\.xspf$/i.test(candidate) && /VLC/i.test(link.textContent)) {
-            this.playFromCanvas(event, candidate);
+            this.playFromCanvas(event, candidate, link.ownerDocument.defaultView.DOMParser);
             return;
         }
 
@@ -152,7 +152,7 @@ module.exports = class ProductionVlcPlayback extends Plugin {
         }
     }
 
-    playFromCanvas(event, candidate) {
+    playFromCanvas(event, candidate, Parser) {
         const { canvas, mediaFolder, vlcPath } = this.settings;
         if (!canvas || !path.isAbsolute(mediaFolder) || !path.isAbsolute(vlcPath) ||
             this.app.workspace.getActiveFile()?.path !== canvas) return;
@@ -163,7 +163,7 @@ module.exports = class ProductionVlcPlayback extends Plugin {
             const playlist = fs.realpathSync(candidate);
             if (!inside(dir, playlist) || !/\.xspf$/i.test(playlist) ||
                 !fs.statSync(playlist).isFile()) return;
-            const [video, second] = readCue(playlist, link.ownerDocument.defaultView.DOMParser, mediaFolder);
+            const [video, second] = readCue(playlist, Parser, mediaFolder);
             handleClick(event);
             const player = spawn(vlcPath, ["--no-qt-start-minimized", "--start-time=" + second, "--", video],
                 { detached: true, stdio: "ignore" });
